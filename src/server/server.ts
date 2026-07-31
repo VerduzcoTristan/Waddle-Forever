@@ -31,9 +31,16 @@ const createServer = async (type: string, port: number, handler: Handler, settin
         socket,
         type === 'Login' ? 'Login' : 'World'
       );
-      socket.on('data', (data: Buffer) => {
-        const dataStr = data.toString().split('\0')[0];
-        handler.handle(client, dataStr);
+      let bufferedData = '';
+      socket.on('data', (data: string) => {
+        const packets = (bufferedData + data).split('\0');
+        bufferedData = packets.pop() ?? '';
+
+        for (const packet of packets) {
+          if (packet.length > 0) {
+            handler.handle(client, packet);
+          }
+        }
       });
   
       socket.on('close', () => {
