@@ -3,15 +3,25 @@ import { SledRace } from '../games/sled';
 import { CardJitsu } from '../games/card';
 import { Handle } from '../handles';
 import { CardJitsuFire } from '../games/fire';
-import { processVersion } from '../../routes/versions';
+import { isGreaterOrEqual, processVersion } from '../../routes/versions';
 import { Room } from '@server/game-logic/rooms';
 
 const handler = new Handler();
 
+const DOJO_COURTYARD_ROOM_ID = 321;
+const DOJO_COURTYARD_SOLO_ROOM_ID = 324;
+const STARTER_DECK_ITEM_ID = 821;
+const DOJO_COURTYARD_ONBOARDING_DATE = '2011-12-08';
+
 // client requesting to join room
 
-handler.xt(Handle.JoinRoom, (client, ...args) => {
-  client.joinRoom(...args);
+handler.xt(Handle.JoinRoom, (client, room, ...args) => {
+  const needsDojoOnboarding = room === DOJO_COURTYARD_ROOM_ID
+    && isGreaterOrEqual(client.version, DOJO_COURTYARD_ONBOARDING_DATE)
+    && !client.penguin.hasItem(STARTER_DECK_ITEM_ID);
+  const targetRoom = needsDojoOnboarding ? DOJO_COURTYARD_SOLO_ROOM_ID : room;
+
+  client.joinRoom(targetRoom, ...args);
 });
 
 const CARD_JITSU_ROOMS = new Set<number>([Room.CardJitsu, Room.CardJitsuFire, Room.CardJitsuWater]);
