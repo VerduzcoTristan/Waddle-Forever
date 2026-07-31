@@ -729,6 +729,12 @@ handler.waddleXt(Handle.CardJitsuPick, (game, client, action, sessionId) => {
         // forced losing is achieved by sending no cards
         ninjas.forEach(n => {
           if (!n.hasCardsToPlay()) {
+            if (n.opponent instanceof NinjaPlayer) {
+              n.opponent.player.gainNinjaProgress(true);
+            }
+            if (n instanceof NinjaPlayer) {
+              n.player.gainNinjaProgress(false);
+            }
             game.setWinner(n.opponent.seat);
           }
         })
