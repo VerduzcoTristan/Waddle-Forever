@@ -1,21 +1,27 @@
 import path from 'path'
 
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
 import log from "electron-log";
-import { autoUpdater } from "electron-updater";
 import { startDiscordRPC } from "./discord";
 import loadFlashPlugin from "./flash-loader";
 import startMenu from "./menu";
 import createStore from "./store";
-import createWindow, { loadMain } from "./window";
-import startServer from "@server/server";
+import createWindow from "./window";
 import settingsManager from "@server/settings";
 import { showWarning } from "./warning";
 import { setLanguageInStore } from "./discord/localization/localization";
 import electronIsDev from "electron-is-dev";
 import { AdminError, downloadMediaFolder, startMedia } from "./media";
 import { GlobalSettings } from '@common/utils';
+import { USER_DATA_FOLDER } from '@common/paths';
 import { VERSION } from '@common/version';
+import { Popups } from './popups';
+import { WEBSITE } from '@common/website';
+import { GameData } from '@server/timelines/game-data';
+import { setupWorldServer, WorldServer } from '@server/socket-server/world-server';
+import { setupLoginServer } from '@server/socket-server/login-server';
+import { HttpServer } from '@server/http';
+import { DataFolder, PenguinRepository } from '@server/database/database';
 
 log.initialize();
 
@@ -30,6 +36,7 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
 }
 
+let server: WorldServer | null = null;
 
 loadFlashPlugin(app);
 
@@ -41,6 +48,8 @@ let mainWindow: BrowserWindow;
 let globalSettings : GlobalSettings = {
   multiplayer: { type: 'local' }
 };
+
+const popups: Popups = new Map<string, BrowserWindow>();
 
 app.on('ready', async () => {
   // setup window is necessary so that in case we need to
@@ -97,21 +106,52 @@ app.on('ready', async () => {
     }
     settingsManager.updateSettings({ answered_packages: VERSION });
   }
-  try {
-    await startServer(settingsManager);
 
-    // this message box is useless, but for some reason, it is the only way for auto reload to work
-    const start = await dialog.showMessageBox(mainWindow, {
-      buttons: ['Start'],
-      title: 'Ready',
-      message: `Waddle Forever is Ready!`,
-      defaultId: 0,
-      cancelId: 1
+  if (!settingsManager.settings.faq_warning) {
+    const result = await dialog.showMessageBox(mainWindow, {
+      buttons: ['Take me to the FAQ', 'Understood'],
+      title: 'Heads-Up!',
+      message: `Welcome to Waddle Forever! If you know nothing about this client, you might be confused about some things:
+- You don't need to create an account, just log in with any name or password
+- The game is entirely offline
+- You can choose the day in the timeline, use commands, and more through the menu
+
+These are the most important things, but there is a full list of questions in our FAQ. If you're ever lost, you can read it in our website.`,
+      cancelId: 2
     });
 
-    if (start.response === 1) {
-      app.quit();
+    if (result.response === 0 || result.response === 1) {
+      if (result.response === 0) {
+        shell.openExternal(`${WEBSITE}/faq`);
+      }
+      settingsManager.updateSettings({ faq_warning: true });
     }
+  }
+
+  const failedMods = settingsManager.mods.initializeMods();
+  if (failedMods.length > 0) {
+    await dialog.showMessageBox(mainWindow, {
+      buttons: ['OK'],
+      title: 'Error with Mods',
+      message: `The following mods could not be turned on. Please fix them and then try enabling them again:
+
+${failedMods.map(mod => `* ${mod}`).join('\n')}}`
+    });
+  }
+
+  const data = new DataFolder(USER_DATA_FOLDER);
+  data.init(VERSION);
+  const db = new PenguinRepository(data.getPath());
+
+  const gameData = new GameData(settingsManager);
+
+  try {
+    await setupLoginServer(settingsManager, db, gameData);
+
+    server = await setupWorldServer(settingsManager, db, gameData);
+
+    const httpServer = new HttpServer(gameData, settingsManager, db);
+    await httpServer.setupServer();
   } catch (error) {
     if (error instanceof Error && error.message.includes('EADDRINUSE')) {
       const result = await dialog.showMessageBox(mainWindow, {
@@ -130,6 +170,10 @@ app.on('ready', async () => {
     }
   }
 
+  if (server === null) {
+    throw new Error("Server should have been initialized");
+  }
+
   mainWindow = await createWindow(store, globalSettings, settingsManager);
   // release window since the main window now serves as
   // the window that will remain open
@@ -138,11 +182,17 @@ app.on('ready', async () => {
   // Some users was reporting problems with cache.
   await mainWindow.webContents.session.clearHostResolverCache();
 
-  startMenu(store, mainWindow, globalSettings, settingsManager);
+  startMenu(store, mainWindow, globalSettings, settingsManager, popups, server);
 
   if (!electronIsDev) {
     startDiscordRPC(store, mainWindow);
   }
+
+  mainWindow.on('closed', () => {
+    popups.forEach(win => {
+      win.close();
+    });
+  });
 });
 
 
@@ -173,6 +223,9 @@ app.on('activate', async () => {
   // dock icon is clicked and there are no other windows open.
   if (BrowserWindow.getAllWindows().length === 0) {
     mainWindow = await createWindow(store, globalSettings, settingsManager);
-    startMenu(store, mainWindow, globalSettings, settingsManager);
+    if (server === null) {
+      throw new Error("Server or handler must be non null");
+    }
+    startMenu(store, mainWindow, globalSettings, settingsManager, popups, server);
   }
 });
